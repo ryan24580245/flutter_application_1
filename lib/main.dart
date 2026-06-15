@@ -47,13 +47,23 @@ class Transaction {
       '${date.minute.toString().padLeft(2, '0')}:'
       '${date.second.toString().padLeft(2, '0')}';
 
-  factory Transaction.fromMap(Map<String, dynamic> m) => Transaction(
-        id: m['id'] as String,
-        title: m['title'] as String,
-        amountCents: m['amount'] as int,
-        isIncome: (m['is_income'] as int) == 1,
-        date: DateTime.parse('${m['date']}T${m['time']}'),
-      );
+  factory Transaction.fromMap(Map<String, dynamic> m) {
+    // 安全解析日期，格式異常時 fallback 到 epoch 而非 crash
+    DateTime parsedDate;
+    try {
+      parsedDate = DateTime.parse('${m['date']}T${m['time']}');
+    } catch (_) {
+      debugPrint('Transaction.fromMap: invalid date=${m['date']} time=${m['time']}, using epoch');
+      parsedDate = DateTime(2000);
+    }
+    return Transaction(
+      id: m['id'] as String,
+      title: m['title'] as String,
+      amountCents: m['amount'] as int,
+      isIncome: (m['is_income'] as int) == 1,
+      date: parsedDate,
+    );
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -139,17 +149,30 @@ class AppDatabase {
   }
 
   Future<void> _onCreate(Database db, int version) async {
-    // v1 基礎結構
+    // 全新安裝：從 v1 一路 migrate 到最新版本
+    // 不能只建 v1 再呼叫 migrate，因為 migrate 假設表格已存在
+    // 正確做法：建完 v1 後，依序套用每個版本的 migration
     await _createV1(db);
-    // v2 及以上的增量 migration 也在 onCreate 一次到位
-    if (version >= 2) await _migrateV1toV2(db);
+    for (int v = 2; v <= version; v++) {
+      await _applyMigration(db, v);
+    }
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    // 從 oldVersion 逐步升級到 newVersion
-    if (oldVersion < 2) await _migrateV1toV2(db);
-    // 未來新版本：
-    // if (oldVersion < 3) await _migrateV2toV3(db);
+    // 從舊版本逐步升級，每個版本都執行對應的 migration
+    for (int v = oldVersion + 1; v <= newVersion; v++) {
+      await _applyMigration(db, v);
+    }
+  }
+
+  /// 集中管理每個版本的 migration，新增版本只需在這裡加 case
+  Future<void> _applyMigration(Database db, int version) async {
+    switch (version) {
+      case 2:
+        await _migrateV1toV2(db);
+      // case 3:
+      //   await _migrateV2toV3(db);  // 未來新版本加在這裡
+    }
   }
 
   Future<void> _createV1(Database db) async {
@@ -163,9 +186,11 @@ class AppDatabase {
         time      TEXT NOT NULL
       )
     ''');
-    // date 欄是查詢主力，建立 Index 避免全表掃描
+    // 主查詢索引：date 範圍查詢
+    await db.execute('CREATE INDEX idx_tx_date ON transactions(date)');
+    // 複合索引：date + is_income，支援未來按類型查詢
     await db.execute(
-        'CREATE INDEX idx_tx_date ON transactions(date)');
+        'CREATE INDEX idx_tx_date_income ON transactions(date, is_income)');
 
     await db.execute('''
       CREATE TABLE month_budgets (
@@ -232,36 +257,44 @@ class AppDatabase {
     }
   }
 
-  /// 查詢指定年月的所有交易，用結構化欄位（date LIKE），無 LIKE 全表掃描問題
-  Future<List<Transaction>> fetchMonth(int year, int month) async {
-    final datePrefix =
-        '$year-${month.toString().padLeft(2, '0')}';
+  /// 查詢指定年月的交易，支援分頁（limit/offset）
+  /// limit=-1 表示全部載入（預設）
+  Future<List<Transaction>> fetchMonth(int year, int month,
+      {int limit = -1, int offset = 0}) async {
+    final mm = month.toString().padLeft(2, '0');
+    final nextMonth = DateTime(year, month + 1, 1);
+    final nextMM = nextMonth.month.toString().padLeft(2, '0');
+    final nextYYYY = nextMonth.year.toString();
     try {
       final rows = await db.query(
         'transactions',
         where: 'date >= ? AND date < ?',
-        // 用 >= / < 搭配日期字串，因為 date 欄格式固定為 YYYY-MM-DD，
-        // 字典序就是日期序，不需要 LIKE，也不受時區影響
-        whereArgs: [
-          '$datePrefix-01',
-          // 下個月 01 號
-          () {
-            final next = DateTime(year, month + 1, 1);
-            return '${next.year}-${next.month.toString().padLeft(2, '0')}-01';
-          }(),
-        ],
+        whereArgs: ['$year-$mm-01', '$nextYYYY-$nextMM-01'],
         orderBy: 'date ASC, time ASC',
+        limit: limit > 0 ? limit : null,
+        offset: offset > 0 ? offset : null,
       );
-      return rows.map((r) => Transaction(
-            id: r['id'] as String,
-            title: r['title'] as String,
-            amountCents: r['amount'] as int,
-            isIncome: (r['is_income'] as int) == 1,
-            date: DateTime.parse('${r['date']}T${r['time']}'),
-          )).toList();
+      return rows.map(Transaction.fromMap).toList();
     } catch (e) {
       debugPrint('fetchMonth error: $e');
       return [];
+    }
+  }
+
+  /// 取得指定年月的交易總筆數（分頁用）
+  Future<int> countMonth(int year, int month) async {
+    final mm = month.toString().padLeft(2, '0');
+    final nextMonth = DateTime(year, month + 1, 1);
+    final nextMM = nextMonth.month.toString().padLeft(2, '0');
+    final nextYYYY = nextMonth.year.toString();
+    try {
+      final result = await db.rawQuery(
+        'SELECT COUNT(*) as cnt FROM transactions WHERE date >= ? AND date < ?',
+        ['$year-$mm-01', '$nextYYYY-$nextMM-01'],
+      );
+      return (result.first['cnt'] as int?) ?? 0;
+    } catch (e) {
+      return 0;
     }
   }
 
@@ -348,21 +381,21 @@ class Settings {
   static const _fixedKey = 'fixed_budget';
   static const _customLabelsKey = 'custom_labels';
 
+  // 快取 SharedPreferences 實例，避免每次都 getInstance()
+  static SharedPreferences? _prefs;
+  static Future<SharedPreferences> get _instance async =>
+      _prefs ??= await SharedPreferences.getInstance();
+
   static Future<double> getFixed() async =>
-      (await SharedPreferences.getInstance()).getDouble(_fixedKey) ?? 0.0;
+      (await _instance).getDouble(_fixedKey) ?? 0.0;
   static Future<void> setFixed(double v) async =>
-      (await SharedPreferences.getInstance()).setDouble(_fixedKey, v);
+      (await _instance).setDouble(_fixedKey, v);
 
-  // 自訂快速標籤
-  static Future<List<String>> getCustomLabels() async {
-    final p = await SharedPreferences.getInstance();
-    return p.getStringList(_customLabelsKey) ?? [];
-  }
+  static Future<List<String>> getCustomLabels() async =>
+      (await _instance).getStringList(_customLabelsKey) ?? [];
 
-  static Future<void> setCustomLabels(List<String> labels) async {
-    final p = await SharedPreferences.getInstance();
-    await p.setStringList(_customLabelsKey, labels);
-  }
+  static Future<void> setCustomLabels(List<String> labels) async =>
+      (await _instance).setStringList(_customLabelsKey, labels);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -480,16 +513,21 @@ class HomeViewModel extends ChangeNotifier {
   Future<void> changeDate(DateTime newDate) async {
     final crossMonth = newDate.year != viewDate.year ||
         newDate.month != viewDate.month;
-    viewDate = newDate;
 
     if (crossMonth) {
-      // 跨月：需重新載入月資料
+      // 跨月：清空舊月份資料釋放記憶體，再載新月份
+      _monthTxs = [];
+      _dayTxs = [];
+      _monthSummary = const MonthSummary(incomeCents: 0, expenseCents: 0);
+      _daySummary = const DaySummary(incomeCents: 0, expenseCents: 0);
+      viewDate = newDate;
+      // 無論是否跨月都確保預算已套用（修正漏套用的問題）
       await _ensureMonthBudget(newDate.year, newDate.month);
       await _loadAll(newDate.year, newDate.month, newDate.day);
     } else {
-      // 同月換日：只更新日層（O(n) filter，不查 DB）
+      viewDate = newDate;
+      // 同月換日：只更新日層
       _refreshDayCache(newDate.day);
-      // 更新日預算
       final db = await AppDatabase.instance
           .getDayBudget(newDate.year, newDate.month, newDate.day);
       if (db != null) {
@@ -590,6 +628,14 @@ class HomeViewModel extends ChangeNotifier {
     await AppDatabase.instance
         .setMonthBudget(viewDate.year, viewDate.month, v);
     monthBudget = v;
+    // 月預算改變後，若當日預算沒有手動設定，重新計算預設日預算
+    final existingDb = await AppDatabase.instance
+        .getDayBudget(viewDate.year, viewDate.month, viewDate.day);
+    if (existingDb == null) {
+      final lastDay = DateTime(viewDate.year, viewDate.month + 1, 0).day;
+      final daysLeft = lastDay - viewDate.day + 1;
+      dayBudget = daysLeft > 0 ? monthRemaining / daysLeft : 0;
+    }
     notifyListeners();
   }
 
@@ -634,8 +680,11 @@ class HomeViewModel extends ChangeNotifier {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// App
+// 全域格式化工具（singleton，避免每次 build 重新建立）
 // ═══════════════════════════════════════════════════════════════
+
+final _kNf = NumberFormat('#,##0.##');
+
 
 class BudgetApp extends StatelessWidget {
   const BudgetApp({super.key});
@@ -984,7 +1033,7 @@ class _BudgetCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final nf = NumberFormat('#,##0.##');
+
     final isNeg = remaining < 0;
     return GestureDetector(
       onTap: onTap,
@@ -1009,10 +1058,10 @@ class _BudgetCard extends StatelessWidget {
             const Icon(Icons.edit, color: Colors.white54, size: 14),
           ]),
           const SizedBox(height: 6),
-          Text('\$${nf.format(budget)}',
+          Text('\$${_kNf.format(budget)}',
               style: const TextStyle(color: Colors.white70, fontSize: 13)),
           const SizedBox(height: 4),
-          Text('\$${nf.format(remaining)}',
+          Text('\$${_kNf.format(remaining)}',
               style: TextStyle(
                   color: isNeg ? Colors.red[200] : Colors.white,
                   fontSize: 22,
@@ -1047,7 +1096,7 @@ class _TransactionList extends StatefulWidget {
 class _TransactionListState extends State<_TransactionList> {
   @override
   Widget build(BuildContext context) {
-    final nf = NumberFormat('#,##0.##');
+
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1144,7 +1193,7 @@ class _TransactionListState extends State<_TransactionList> {
                             style: TextStyle(
                                 color: Colors.grey[500], fontSize: 11)),
                         trailing: Text(
-                          '${tx.isIncome ? '+' : '-'}\$${nf.format(tx.amount)}',
+                          '${tx.isIncome ? '+' : '-'}\$${_kNf.format(tx.amount)}',
                           style: TextStyle(
                               color: tx.isIncome ? Colors.green : Colors.red,
                               fontWeight: FontWeight.bold,
@@ -1233,7 +1282,9 @@ class _AddTransactionDialogState extends State<AddTransactionDialog> {
 
   Future<void> _addCustomLabel(String label) async {
     final trimmed = label.trim();
-    if (trimmed.isEmpty || _customLabels.contains(trimmed)) return;
+    // 去重：忽略空白和已存在的標籤（大小寫不同視為不同）
+    if (trimmed.isEmpty) return;
+    if (_customLabels.any((l) => l.trim() == trimmed)) return;
     final updated = [..._customLabels, trimmed];
     await Settings.setCustomLabels(updated);
     if (mounted) setState(() => _customLabels = updated);
@@ -1296,6 +1347,10 @@ class _AddTransactionDialogState extends State<AddTransactionDialog> {
     final isViewToday = widget.date.year == now.year &&
         widget.date.month == now.month &&
         widget.date.day == now.day;
+
+    // 今天：記錄實際時刻
+    // 過去/未來日期：記錄 12:00:00 正午，確保時間語意合理
+    // 同一天多筆輸入時，每筆都是 12:00:00，但 id 不同，insertionIndex 會把新的插後面
     final txDate = isViewToday
         ? now
         : DateTime(widget.date.year, widget.date.month, widget.date.day, 12, 0, 0);
