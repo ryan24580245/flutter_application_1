@@ -346,23 +346,10 @@ class AppDatabase {
 
 class Settings {
   static const _fixedKey = 'fixed_budget';
-  static const _customLabelsKey = 'custom_labels';
-
   static Future<double> getFixed() async =>
       (await SharedPreferences.getInstance()).getDouble(_fixedKey) ?? 0.0;
   static Future<void> setFixed(double v) async =>
       (await SharedPreferences.getInstance()).setDouble(_fixedKey, v);
-
-  // 自訂快速標籤
-  static Future<List<String>> getCustomLabels() async {
-    final p = await SharedPreferences.getInstance();
-    return p.getStringList(_customLabelsKey) ?? [];
-  }
-
-  static Future<void> setCustomLabels(List<String> labels) async {
-    final p = await SharedPreferences.getInstance();
-    await p.setStringList(_customLabelsKey, labels);
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -697,12 +684,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _addTransaction() async {
-    final result = await Navigator.push<Transaction>(
-      context,
-      MaterialPageRoute(
-        builder: (_) => AddTransactionDialog(date: _vm.viewDate),
-        fullscreenDialog: true,
-      ),
+    final result = await showDialog<Transaction>(
+      context: context,
+      builder: (_) => AddTransactionDialog(date: _vm.viewDate),
     );
     if (result == null) return;
     try {
@@ -1166,32 +1150,7 @@ class _TransactionListState extends State<_TransactionList> {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 預設快速標籤
-// ═══════════════════════════════════════════════════════════════
-
-// 支出類
-const _kDefaultExpenseLabels = [
-  '早餐', '午餐', '晚餐', '飲料', '零食', '宵夜',
-  '超市', '便利商店', '外送',
-  '交通', '油費', '停車費', '計程車', 'Uber',
-  '房租', '水費', '電費', '網路費', '手機費',
-  '購物', '服飾', '藥品', '醫療',
-  '娛樂', '電影', '遊戲', '訂閱',
-  '學費', '書籍', '文具',
-  '美容', '理髮', '健身',
-  '禮物', '聚餐', '旅遊',
-];
-
-// 收入類
-const _kDefaultIncomeLabels = [
-  '薪資', '獎金', '加班費', '兼職',
-  '投資', '股息', '利息',
-  '退款', '獎金', '紅包',
-  '租金收入', '其他收入',
-];
-
-// ═══════════════════════════════════════════════════════════════
-// 新增交易頁面（全頁，含快速標籤）
+// 新增交易對話框
 // ═══════════════════════════════════════════════════════════════
 
 class AddTransactionDialog extends StatefulWidget {
@@ -1204,102 +1163,34 @@ class AddTransactionDialog extends StatefulWidget {
 class _AddTransactionDialogState extends State<AddTransactionDialog> {
   final _titleCtrl = TextEditingController();
   final _amountCtrl = TextEditingController();
-  final _newLabelCtrl = TextEditingController();
   bool _isIncome = false;
   final _uuid = const Uuid();
-  List<String> _customLabels = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _loadCustomLabels();
-    // 金額欄位變動時觸發 rebuild（讓確定按鈕即時反應）
-    _amountCtrl.addListener(() => setState(() {}));
-    _titleCtrl.addListener(() => setState(() {}));
-  }
 
   @override
   void dispose() {
     _titleCtrl.dispose();
     _amountCtrl.dispose();
-    _newLabelCtrl.dispose();
     super.dispose();
-  }
-
-  Future<void> _loadCustomLabels() async {
-    final labels = await Settings.getCustomLabels();
-    if (mounted) setState(() => _customLabels = labels);
-  }
-
-  Future<void> _addCustomLabel(String label) async {
-    final trimmed = label.trim();
-    if (trimmed.isEmpty || _customLabels.contains(trimmed)) return;
-    final updated = [..._customLabels, trimmed];
-    await Settings.setCustomLabels(updated);
-    if (mounted) setState(() => _customLabels = updated);
-  }
-
-  Future<void> _removeCustomLabel(String label) async {
-    final updated = _customLabels.where((l) => l != label).toList();
-    await Settings.setCustomLabels(updated);
-    if (mounted) setState(() => _customLabels = updated);
-  }
-
-  void _selectLabel(String label) {
-    setState(() => _titleCtrl.text = label);
-  }
-
-  void _showAddLabelDialog() {
-    _newLabelCtrl.clear();
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('新增快速標籤'),
-        content: TextField(
-          controller: _newLabelCtrl,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: '標籤名稱',
-            border: OutlineInputBorder(),
-          ),
-          onSubmitted: (v) {
-            _addCustomLabel(v);
-            Navigator.pop(context);
-          },
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF2E7D9F),
-                foregroundColor: Colors.white),
-            onPressed: () {
-              _addCustomLabel(_newLabelCtrl.text);
-              Navigator.pop(context);
-            },
-            child: const Text('新增'),
-          ),
-        ],
-      ),
-    );
   }
 
   void _submit() {
     final title = _titleCtrl.text.trim();
-    final amountYuan = double.tryParse(_amountCtrl.text.trim());
-    if (title.isEmpty || amountYuan == null || amountYuan <= 0) return;
-
+    final amountStr = _amountCtrl.text.trim();
+    final amountYuan = double.tryParse(amountStr);
+    if (title.isEmpty || amountYuan == null || amountYuan <= 0) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('請填寫名稱和有效金額')));
+      return;
+    }
     final now = DateTime.now();
     final isViewToday = widget.date.year == now.year &&
         widget.date.month == now.month &&
         widget.date.day == now.day;
+    // 今天：記錄實際時刻；過去/未來日期：記錄 12:00:00（正午），
+    // 確保同一天多筆記錄的時間不全是 00:00，排序有意義
     final txDate = isViewToday
         ? now
         : DateTime(widget.date.year, widget.date.month, widget.date.day, 12, 0, 0);
-
     Navigator.pop(context, Transaction(
       id: _uuid.v4(),
       title: title,
@@ -1311,258 +1202,47 @@ class _AddTransactionDialogState extends State<AddTransactionDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final defaultLabels =
-        _isIncome ? _kDefaultIncomeLabels : _kDefaultExpenseLabels;
-    final canSubmit = _titleCtrl.text.trim().isNotEmpty &&
-        (double.tryParse(_amountCtrl.text.trim()) ?? 0) > 0;
-
-    return Scaffold(
-      backgroundColor: const Color(0xFFF0F4F8),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF2E7D9F),
-        foregroundColor: Colors.white,
-        title: const Text('新增收支'),
-        leading: IconButton(
-          icon: const Icon(Icons.close),
-          onPressed: () => Navigator.pop(context),
+    return AlertDialog(
+      title: const Text('新增收支'),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        Row(children: [
+          Expanded(child: _TypeButton(
+              label: '支出', icon: Icons.arrow_upward,
+              selected: !_isIncome, color: Colors.red,
+              onTap: () => setState(() => _isIncome = false))),
+          const SizedBox(width: 8),
+          Expanded(child: _TypeButton(
+              label: '收入', icon: Icons.arrow_downward,
+              selected: _isIncome, color: Colors.green,
+              onTap: () => setState(() => _isIncome = true))),
+        ]),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _titleCtrl,
+          decoration: const InputDecoration(
+              labelText: '名稱（如：午餐、薪資）', border: OutlineInputBorder()),
         ),
-      ),
-      body: Column(children: [
-        // ── 收入/支出切換 ──────────────────────────────────────
-        Container(
-          color: const Color(0xFF2E7D9F),
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-          child: Row(children: [
-            Expanded(child: _TypeButton(
-                label: '支出', icon: Icons.arrow_upward,
-                selected: !_isIncome, color: Colors.red,
-                onTap: () => setState(() => _isIncome = false))),
-            const SizedBox(width: 12),
-            Expanded(child: _TypeButton(
-                label: '收入', icon: Icons.arrow_downward,
-                selected: _isIncome, color: Colors.green,
-                onTap: () => setState(() => _isIncome = true))),
-          ]),
-        ),
-
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-
-              // ── 金額輸入 ──────────────────────────────────────
-              Card(
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                    Text('金額',
-                        style: TextStyle(
-                            color: Colors.grey[600],
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500)),
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: _amountCtrl,
-                      autofocus: true,
-                      keyboardType:
-                          const TextInputType.numberWithOptions(decimal: true),
-                      style: const TextStyle(
-                          fontSize: 32, fontWeight: FontWeight.bold),
-                      decoration: InputDecoration(
-                        prefixText: '\$',
-                        prefixStyle: TextStyle(
-                            fontSize: 28,
-                            color: _isIncome ? Colors.green : Colors.red,
-                            fontWeight: FontWeight.bold),
-                        border: InputBorder.none,
-                        hintText: '0',
-                        hintStyle:
-                            TextStyle(color: Colors.grey[300], fontSize: 32),
-                      ),
-                    ),
-                  ]),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // ── 名稱輸入 ──────────────────────────────────────
-              Card(
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                    Text('名稱',
-                        style: TextStyle(
-                            color: Colors.grey[600],
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500)),
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: _titleCtrl,
-                      decoration: const InputDecoration(
-                        hintText: '輸入或選擇下方名稱',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                  ]),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // ── 自訂標籤區 ─────────────────────────────────────
-              if (_customLabels.isNotEmpty) ...[
-                Row(children: [
-                  const Text('我的標籤',
-                      style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14)),
-                  const Spacer(),
-                  TextButton.icon(
-                    icon: const Icon(Icons.add, size: 16),
-                    label: const Text('新增'),
-                    style: TextButton.styleFrom(
-                        foregroundColor: const Color(0xFF2E7D9F)),
-                    onPressed: _showAddLabelDialog,
-                  ),
-                ]),
-                const SizedBox(height: 6),
-                Wrap(spacing: 8, runSpacing: 8, children: [
-                  ..._customLabels.map((label) => GestureDetector(
-                    onLongPress: () async {
-                      final confirm = await showDialog<bool>(
-                        context: context,
-                        builder: (_) => AlertDialog(
-                          title: const Text('刪除標籤？'),
-                          content: Text('「$label」'),
-                          actions: [
-                            TextButton(
-                                onPressed: () => Navigator.pop(context, false),
-                                child: const Text('取消')),
-                            TextButton(
-                                onPressed: () => Navigator.pop(context, true),
-                                child: const Text('刪除',
-                                    style: TextStyle(color: Colors.red))),
-                          ],
-                        ),
-                      );
-                      if (confirm == true) _removeCustomLabel(label);
-                    },
-                    child: _LabelChip(
-                      label: label,
-                      selected: _titleCtrl.text == label,
-                      color: const Color(0xFF2E7D9F),
-                      onTap: () => _selectLabel(label),
-                    ),
-                  )),
-                ]),
-                const SizedBox(height: 16),
-              ],
-
-              // ── 預設標籤區 ─────────────────────────────────────
-              Row(children: [
-                Text(_isIncome ? '常用收入' : '常用支出',
-                    style: const TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 14)),
-                const Spacer(),
-                if (_customLabels.isEmpty)
-                  TextButton.icon(
-                    icon: const Icon(Icons.add, size: 16),
-                    label: const Text('新增標籤'),
-                    style: TextButton.styleFrom(
-                        foregroundColor: const Color(0xFF2E7D9F)),
-                    onPressed: _showAddLabelDialog,
-                  ),
-              ]),
-              const SizedBox(height: 6),
-              Wrap(spacing: 8, runSpacing: 8, children: [
-                ...defaultLabels.map((label) => _LabelChip(
-                  label: label,
-                  selected: _titleCtrl.text == label,
-                  color: Colors.grey[700]!,
-                  onTap: () => _selectLabel(label),
-                )),
-              ]),
-
-              const SizedBox(height: 80), // 底部留空給按鈕
-            ]),
-          ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _amountCtrl,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: const InputDecoration(
+              labelText: '金額', prefixText: '\$', border: OutlineInputBorder()),
         ),
       ]),
-
-      // ── 確定按鈕（固定在底部）──────────────────────────────
-      bottomNavigationBar: Padding(
-        padding: EdgeInsets.only(
-          left: 16, right: 16, bottom: MediaQuery.of(context).viewInsets.bottom + 16,
-          top: 8,
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消')),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+              backgroundColor: _isIncome ? Colors.green : Colors.red,
+              foregroundColor: Colors.white),
+          onPressed: _submit,
+          child: const Text('確定新增'),
         ),
-        child: SizedBox(
-          width: double.infinity,
-          height: 52,
-          child: ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: canSubmit
-                  ? (_isIncome ? Colors.green : Colors.red)
-                  : Colors.grey[300],
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
-            ),
-            onPressed: canSubmit ? _submit : null,
-            child: Text(
-              canSubmit ? '確定新增' : '請填寫名稱和金額',
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ── 標籤小按鈕 ──────────────────────────────────────────────────
-
-class _LabelChip extends StatelessWidget {
-  final String label;
-  final bool selected;
-  final Color color;
-  final VoidCallback onTap;
-
-  const _LabelChip({
-    required this.label,
-    required this.selected,
-    required this.color,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: selected ? color : color.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-              color: selected ? color : color.withValues(alpha: 0.3)),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: selected ? Colors.white : color,
-            fontSize: 13,
-            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-          ),
-        ),
-      ),
+      ],
     );
   }
 }
