@@ -47,13 +47,23 @@ class Transaction {
       '${date.minute.toString().padLeft(2, '0')}:'
       '${date.second.toString().padLeft(2, '0')}';
 
-  factory Transaction.fromMap(Map<String, dynamic> m) => Transaction(
-        id: m['id'] as String,
-        title: m['title'] as String,
-        amountCents: m['amount'] as int,
-        isIncome: (m['is_income'] as int) == 1,
-        date: DateTime.parse('${m['date']}T${m['time']}'),
-      );
+  factory Transaction.fromMap(Map<String, dynamic> m) {
+    // 安全解析日期，格式異常時 fallback 到 epoch 而非 crash
+    DateTime parsedDate;
+    try {
+      parsedDate = DateTime.parse('${m['date']}T${m['time']}');
+    } catch (_) {
+      debugPrint('Transaction.fromMap: invalid date=${m['date']} time=${m['time']}, using epoch');
+      parsedDate = DateTime(2000);
+    }
+    return Transaction(
+      id: m['id'] as String,
+      title: m['title'] as String,
+      amountCents: m['amount'] as int,
+      isIncome: (m['is_income'] as int) == 1,
+      date: parsedDate,
+    );
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -139,17 +149,30 @@ class AppDatabase {
   }
 
   Future<void> _onCreate(Database db, int version) async {
-    // v1 基礎結構
+    // 全新安裝：從 v1 一路 migrate 到最新版本
+    // 不能只建 v1 再呼叫 migrate，因為 migrate 假設表格已存在
+    // 正確做法：建完 v1 後，依序套用每個版本的 migration
     await _createV1(db);
-    // v2 及以上的增量 migration 也在 onCreate 一次到位
-    if (version >= 2) await _migrateV1toV2(db);
+    for (int v = 2; v <= version; v++) {
+      await _applyMigration(db, v);
+    }
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    // 從 oldVersion 逐步升級到 newVersion
-    if (oldVersion < 2) await _migrateV1toV2(db);
-    // 未來新版本：
-    // if (oldVersion < 3) await _migrateV2toV3(db);
+    // 從舊版本逐步升級，每個版本都執行對應的 migration
+    for (int v = oldVersion + 1; v <= newVersion; v++) {
+      await _applyMigration(db, v);
+    }
+  }
+
+  /// 集中管理每個版本的 migration，新增版本只需在這裡加 case
+  Future<void> _applyMigration(Database db, int version) async {
+    switch (version) {
+      case 2:
+        await _migrateV1toV2(db);
+      // case 3:
+      //   await _migrateV2toV3(db);  // 未來新版本加在這裡
+    }
   }
 
   Future<void> _createV1(Database db) async {
@@ -163,9 +186,11 @@ class AppDatabase {
         time      TEXT NOT NULL
       )
     ''');
-    // date 欄是查詢主力，建立 Index 避免全表掃描
+    // 主查詢索引：date 範圍查詢
+    await db.execute('CREATE INDEX idx_tx_date ON transactions(date)');
+    // 複合索引：date + is_income，支援未來按類型查詢
     await db.execute(
-        'CREATE INDEX idx_tx_date ON transactions(date)');
+        'CREATE INDEX idx_tx_date_income ON transactions(date, is_income)');
 
     await db.execute('''
       CREATE TABLE month_budgets (
@@ -232,36 +257,44 @@ class AppDatabase {
     }
   }
 
-  /// 查詢指定年月的所有交易，用結構化欄位（date LIKE），無 LIKE 全表掃描問題
-  Future<List<Transaction>> fetchMonth(int year, int month) async {
-    final datePrefix =
-        '$year-${month.toString().padLeft(2, '0')}';
+  /// 查詢指定年月的交易，支援分頁（limit/offset）
+  /// limit=-1 表示全部載入（預設）
+  Future<List<Transaction>> fetchMonth(int year, int month,
+      {int limit = -1, int offset = 0}) async {
+    final mm = month.toString().padLeft(2, '0');
+    final nextMonth = DateTime(year, month + 1, 1);
+    final nextMM = nextMonth.month.toString().padLeft(2, '0');
+    final nextYYYY = nextMonth.year.toString();
     try {
       final rows = await db.query(
         'transactions',
         where: 'date >= ? AND date < ?',
-        // 用 >= / < 搭配日期字串，因為 date 欄格式固定為 YYYY-MM-DD，
-        // 字典序就是日期序，不需要 LIKE，也不受時區影響
-        whereArgs: [
-          '$datePrefix-01',
-          // 下個月 01 號
-          () {
-            final next = DateTime(year, month + 1, 1);
-            return '${next.year}-${next.month.toString().padLeft(2, '0')}-01';
-          }(),
-        ],
+        whereArgs: ['$year-$mm-01', '$nextYYYY-$nextMM-01'],
         orderBy: 'date ASC, time ASC',
+        limit: limit > 0 ? limit : null,
+        offset: offset > 0 ? offset : null,
       );
-      return rows.map((r) => Transaction(
-            id: r['id'] as String,
-            title: r['title'] as String,
-            amountCents: r['amount'] as int,
-            isIncome: (r['is_income'] as int) == 1,
-            date: DateTime.parse('${r['date']}T${r['time']}'),
-          )).toList();
+      return rows.map(Transaction.fromMap).toList();
     } catch (e) {
       debugPrint('fetchMonth error: $e');
       return [];
+    }
+  }
+
+  /// 取得指定年月的交易總筆數（分頁用）
+  Future<int> countMonth(int year, int month) async {
+    final mm = month.toString().padLeft(2, '0');
+    final nextMonth = DateTime(year, month + 1, 1);
+    final nextMM = nextMonth.month.toString().padLeft(2, '0');
+    final nextYYYY = nextMonth.year.toString();
+    try {
+      final result = await db.rawQuery(
+        'SELECT COUNT(*) as cnt FROM transactions WHERE date >= ? AND date < ?',
+        ['$year-$mm-01', '$nextYYYY-$nextMM-01'],
+      );
+      return (result.first['cnt'] as int?) ?? 0;
+    } catch (e) {
+      return 0;
     }
   }
 
@@ -346,10 +379,23 @@ class AppDatabase {
 
 class Settings {
   static const _fixedKey = 'fixed_budget';
+  static const _customLabelsKey = 'custom_labels';
+
+  // 快取 SharedPreferences 實例，避免每次都 getInstance()
+  static SharedPreferences? _prefs;
+  static Future<SharedPreferences> get _instance async =>
+      _prefs ??= await SharedPreferences.getInstance();
+
   static Future<double> getFixed() async =>
-      (await SharedPreferences.getInstance()).getDouble(_fixedKey) ?? 0.0;
+      (await _instance).getDouble(_fixedKey) ?? 0.0;
   static Future<void> setFixed(double v) async =>
-      (await SharedPreferences.getInstance()).setDouble(_fixedKey, v);
+      (await _instance).setDouble(_fixedKey, v);
+
+  static Future<List<String>> getCustomLabels() async =>
+      (await _instance).getStringList(_customLabelsKey) ?? [];
+
+  static Future<void> setCustomLabels(List<String> labels) async =>
+      (await _instance).setStringList(_customLabelsKey, labels);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -467,16 +513,21 @@ class HomeViewModel extends ChangeNotifier {
   Future<void> changeDate(DateTime newDate) async {
     final crossMonth = newDate.year != viewDate.year ||
         newDate.month != viewDate.month;
-    viewDate = newDate;
 
     if (crossMonth) {
-      // 跨月：需重新載入月資料
+      // 跨月：清空舊月份資料釋放記憶體，再載新月份
+      _monthTxs = [];
+      _dayTxs = [];
+      _monthSummary = const MonthSummary(incomeCents: 0, expenseCents: 0);
+      _daySummary = const DaySummary(incomeCents: 0, expenseCents: 0);
+      viewDate = newDate;
+      // 無論是否跨月都確保預算已套用（修正漏套用的問題）
       await _ensureMonthBudget(newDate.year, newDate.month);
       await _loadAll(newDate.year, newDate.month, newDate.day);
     } else {
-      // 同月換日：只更新日層（O(n) filter，不查 DB）
+      viewDate = newDate;
+      // 同月換日：只更新日層
       _refreshDayCache(newDate.day);
-      // 更新日預算
       final db = await AppDatabase.instance
           .getDayBudget(newDate.year, newDate.month, newDate.day);
       if (db != null) {
@@ -577,6 +628,14 @@ class HomeViewModel extends ChangeNotifier {
     await AppDatabase.instance
         .setMonthBudget(viewDate.year, viewDate.month, v);
     monthBudget = v;
+    // 月預算改變後，若當日預算沒有手動設定，重新計算預設日預算
+    final existingDb = await AppDatabase.instance
+        .getDayBudget(viewDate.year, viewDate.month, viewDate.day);
+    if (existingDb == null) {
+      final lastDay = DateTime(viewDate.year, viewDate.month + 1, 0).day;
+      final daysLeft = lastDay - viewDate.day + 1;
+      dayBudget = daysLeft > 0 ? monthRemaining / daysLeft : 0;
+    }
     notifyListeners();
   }
 
@@ -621,8 +680,11 @@ class HomeViewModel extends ChangeNotifier {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// App
+// 全域格式化工具（singleton，避免每次 build 重新建立）
 // ═══════════════════════════════════════════════════════════════
+
+final _kNf = NumberFormat('#,##0.##');
+
 
 class BudgetApp extends StatelessWidget {
   const BudgetApp({super.key});
@@ -684,9 +746,12 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _addTransaction() async {
-    final result = await showDialog<Transaction>(
-      context: context,
-      builder: (_) => AddTransactionDialog(date: _vm.viewDate),
+    final result = await Navigator.push<Transaction>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AddTransactionDialog(date: _vm.viewDate),
+        fullscreenDialog: true,
+      ),
     );
     if (result == null) return;
     try {
@@ -968,7 +1033,7 @@ class _BudgetCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final nf = NumberFormat('#,##0.##');
+
     final isNeg = remaining < 0;
     return GestureDetector(
       onTap: onTap,
@@ -993,10 +1058,10 @@ class _BudgetCard extends StatelessWidget {
             const Icon(Icons.edit, color: Colors.white54, size: 14),
           ]),
           const SizedBox(height: 6),
-          Text('\$${nf.format(budget)}',
+          Text('\$${_kNf.format(budget)}',
               style: const TextStyle(color: Colors.white70, fontSize: 13)),
           const SizedBox(height: 4),
-          Text('\$${nf.format(remaining)}',
+          Text('\$${_kNf.format(remaining)}',
               style: TextStyle(
                   color: isNeg ? Colors.red[200] : Colors.white,
                   fontSize: 22,
@@ -1031,7 +1096,7 @@ class _TransactionList extends StatefulWidget {
 class _TransactionListState extends State<_TransactionList> {
   @override
   Widget build(BuildContext context) {
-    final nf = NumberFormat('#,##0.##');
+
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1128,7 +1193,7 @@ class _TransactionListState extends State<_TransactionList> {
                             style: TextStyle(
                                 color: Colors.grey[500], fontSize: 11)),
                         trailing: Text(
-                          '${tx.isIncome ? '+' : '-'}\$${nf.format(tx.amount)}',
+                          '${tx.isIncome ? '+' : '-'}\$${_kNf.format(tx.amount)}',
                           style: TextStyle(
                               color: tx.isIncome ? Colors.green : Colors.red,
                               fontWeight: FontWeight.bold,
@@ -1150,7 +1215,32 @@ class _TransactionListState extends State<_TransactionList> {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 新增交易對話框
+// 預設快速標籤
+// ═══════════════════════════════════════════════════════════════
+
+// 支出類
+const _kDefaultExpenseLabels = [
+  '早餐', '午餐', '晚餐', '飲料', '零食', '宵夜',
+  '超市', '便利商店', '外送',
+  '交通', '油費', '停車費', '計程車', 'Uber',
+  '房租', '水費', '電費', '網路費', '手機費',
+  '購物', '服飾', '藥品', '醫療',
+  '娛樂', '電影', '遊戲', '訂閱',
+  '學費', '書籍', '文具',
+  '美容', '理髮', '健身',
+  '禮物', '聚餐', '旅遊',
+];
+
+// 收入類
+const _kDefaultIncomeLabels = [
+  '薪資', '獎金', '加班費', '兼職',
+  '投資', '股息', '利息',
+  '退款', '獎金', '紅包',
+  '租金收入', '其他收入',
+];
+
+// ═══════════════════════════════════════════════════════════════
+// 新增交易頁面（全頁，含快速標籤）
 // ═══════════════════════════════════════════════════════════════
 
 class AddTransactionDialog extends StatefulWidget {
@@ -1163,34 +1253,108 @@ class AddTransactionDialog extends StatefulWidget {
 class _AddTransactionDialogState extends State<AddTransactionDialog> {
   final _titleCtrl = TextEditingController();
   final _amountCtrl = TextEditingController();
+  final _newLabelCtrl = TextEditingController();
   bool _isIncome = false;
   final _uuid = const Uuid();
+  List<String> _customLabels = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCustomLabels();
+    // 金額欄位變動時觸發 rebuild（讓確定按鈕即時反應）
+    _amountCtrl.addListener(() => setState(() {}));
+    _titleCtrl.addListener(() => setState(() {}));
+  }
 
   @override
   void dispose() {
     _titleCtrl.dispose();
     _amountCtrl.dispose();
+    _newLabelCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadCustomLabels() async {
+    final labels = await Settings.getCustomLabels();
+    if (mounted) setState(() => _customLabels = labels);
+  }
+
+  Future<void> _addCustomLabel(String label) async {
+    final trimmed = label.trim();
+    // 去重：忽略空白和已存在的標籤（大小寫不同視為不同）
+    if (trimmed.isEmpty) return;
+    if (_customLabels.any((l) => l.trim() == trimmed)) return;
+    final updated = [..._customLabels, trimmed];
+    await Settings.setCustomLabels(updated);
+    if (mounted) setState(() => _customLabels = updated);
+  }
+
+  Future<void> _removeCustomLabel(String label) async {
+    final updated = _customLabels.where((l) => l != label).toList();
+    await Settings.setCustomLabels(updated);
+    if (mounted) setState(() => _customLabels = updated);
+  }
+
+  void _selectLabel(String label) {
+    setState(() => _titleCtrl.text = label);
+  }
+
+  void _showAddLabelDialog() {
+    _newLabelCtrl.clear();
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('新增快速標籤'),
+        content: TextField(
+          controller: _newLabelCtrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '標籤名稱',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (v) {
+            _addCustomLabel(v);
+            Navigator.pop(context);
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF2E7D9F),
+                foregroundColor: Colors.white),
+            onPressed: () {
+              _addCustomLabel(_newLabelCtrl.text);
+              Navigator.pop(context);
+            },
+            child: const Text('新增'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _submit() {
     final title = _titleCtrl.text.trim();
-    final amountStr = _amountCtrl.text.trim();
-    final amountYuan = double.tryParse(amountStr);
-    if (title.isEmpty || amountYuan == null || amountYuan <= 0) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('請填寫名稱和有效金額')));
-      return;
-    }
+    final amountYuan = double.tryParse(_amountCtrl.text.trim());
+    if (title.isEmpty || amountYuan == null || amountYuan <= 0) return;
+
     final now = DateTime.now();
     final isViewToday = widget.date.year == now.year &&
         widget.date.month == now.month &&
         widget.date.day == now.day;
-    // 今天：記錄實際時刻；過去/未來日期：記錄 12:00:00（正午），
-    // 確保同一天多筆記錄的時間不全是 00:00，排序有意義
+
+    // 今天：記錄實際時刻
+    // 過去/未來日期：記錄 12:00:00 正午，確保時間語意合理
+    // 同一天多筆輸入時，每筆都是 12:00:00，但 id 不同，insertionIndex 會把新的插後面
     final txDate = isViewToday
         ? now
         : DateTime(widget.date.year, widget.date.month, widget.date.day, 12, 0, 0);
+
     Navigator.pop(context, Transaction(
       id: _uuid.v4(),
       title: title,
@@ -1202,47 +1366,258 @@ class _AddTransactionDialogState extends State<AddTransactionDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('新增收支'),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      content: Column(mainAxisSize: MainAxisSize.min, children: [
-        Row(children: [
-          Expanded(child: _TypeButton(
-              label: '支出', icon: Icons.arrow_upward,
-              selected: !_isIncome, color: Colors.red,
-              onTap: () => setState(() => _isIncome = false))),
-          const SizedBox(width: 8),
-          Expanded(child: _TypeButton(
-              label: '收入', icon: Icons.arrow_downward,
-              selected: _isIncome, color: Colors.green,
-              onTap: () => setState(() => _isIncome = true))),
-        ]),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _titleCtrl,
-          decoration: const InputDecoration(
-              labelText: '名稱（如：午餐、薪資）', border: OutlineInputBorder()),
+    final defaultLabels =
+        _isIncome ? _kDefaultIncomeLabels : _kDefaultExpenseLabels;
+    final canSubmit = _titleCtrl.text.trim().isNotEmpty &&
+        (double.tryParse(_amountCtrl.text.trim()) ?? 0) > 0;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFF0F4F8),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF2E7D9F),
+        foregroundColor: Colors.white,
+        title: const Text('新增收支'),
+        leading: IconButton(
+          icon: const Icon(Icons.close),
+          onPressed: () => Navigator.pop(context),
         ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _amountCtrl,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(
-              labelText: '金額', prefixText: '\$', border: OutlineInputBorder()),
+      ),
+      body: Column(children: [
+        // ── 收入/支出切換 ──────────────────────────────────────
+        Container(
+          color: const Color(0xFF2E7D9F),
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          child: Row(children: [
+            Expanded(child: _TypeButton(
+                label: '支出', icon: Icons.arrow_upward,
+                selected: !_isIncome, color: Colors.red,
+                onTap: () => setState(() => _isIncome = false))),
+            const SizedBox(width: 12),
+            Expanded(child: _TypeButton(
+                label: '收入', icon: Icons.arrow_downward,
+                selected: _isIncome, color: Colors.green,
+                onTap: () => setState(() => _isIncome = true))),
+          ]),
+        ),
+
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+              // ── 金額輸入 ──────────────────────────────────────
+              Card(
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                    Text('金額',
+                        style: TextStyle(
+                            color: Colors.grey[600],
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500)),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _amountCtrl,
+                      autofocus: true,
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                      style: const TextStyle(
+                          fontSize: 32, fontWeight: FontWeight.bold),
+                      decoration: InputDecoration(
+                        prefixText: '\$',
+                        prefixStyle: TextStyle(
+                            fontSize: 28,
+                            color: _isIncome ? Colors.green : Colors.red,
+                            fontWeight: FontWeight.bold),
+                        border: InputBorder.none,
+                        hintText: '0',
+                        hintStyle:
+                            TextStyle(color: Colors.grey[300], fontSize: 32),
+                      ),
+                    ),
+                  ]),
+                ),
+              ),
+
+              const SizedBox(height: 16),
+
+              // ── 名稱輸入 ──────────────────────────────────────
+              Card(
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                    Text('名稱',
+                        style: TextStyle(
+                            color: Colors.grey[600],
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500)),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _titleCtrl,
+                      decoration: const InputDecoration(
+                        hintText: '輸入或選擇下方名稱',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ]),
+                ),
+              ),
+
+              const SizedBox(height: 16),
+
+              // ── 自訂標籤區 ─────────────────────────────────────
+              if (_customLabels.isNotEmpty) ...[
+                Row(children: [
+                  const Text('我的標籤',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14)),
+                  const Spacer(),
+                  TextButton.icon(
+                    icon: const Icon(Icons.add, size: 16),
+                    label: const Text('新增'),
+                    style: TextButton.styleFrom(
+                        foregroundColor: const Color(0xFF2E7D9F)),
+                    onPressed: _showAddLabelDialog,
+                  ),
+                ]),
+                const SizedBox(height: 6),
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  ..._customLabels.map((label) => GestureDetector(
+                    onLongPress: () async {
+                      final confirm = await showDialog<bool>(
+                        context: context,
+                        builder: (_) => AlertDialog(
+                          title: const Text('刪除標籤？'),
+                          content: Text('「$label」'),
+                          actions: [
+                            TextButton(
+                                onPressed: () => Navigator.pop(context, false),
+                                child: const Text('取消')),
+                            TextButton(
+                                onPressed: () => Navigator.pop(context, true),
+                                child: const Text('刪除',
+                                    style: TextStyle(color: Colors.red))),
+                          ],
+                        ),
+                      );
+                      if (confirm == true) _removeCustomLabel(label);
+                    },
+                    child: _LabelChip(
+                      label: label,
+                      selected: _titleCtrl.text == label,
+                      color: const Color(0xFF2E7D9F),
+                      onTap: () => _selectLabel(label),
+                    ),
+                  )),
+                ]),
+                const SizedBox(height: 16),
+              ],
+
+              // ── 預設標籤區 ─────────────────────────────────────
+              Row(children: [
+                Text(_isIncome ? '常用收入' : '常用支出',
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 14)),
+                const Spacer(),
+                if (_customLabels.isEmpty)
+                  TextButton.icon(
+                    icon: const Icon(Icons.add, size: 16),
+                    label: const Text('新增標籤'),
+                    style: TextButton.styleFrom(
+                        foregroundColor: const Color(0xFF2E7D9F)),
+                    onPressed: _showAddLabelDialog,
+                  ),
+              ]),
+              const SizedBox(height: 6),
+              Wrap(spacing: 8, runSpacing: 8, children: [
+                ...defaultLabels.map((label) => _LabelChip(
+                  label: label,
+                  selected: _titleCtrl.text == label,
+                  color: Colors.grey[700]!,
+                  onTap: () => _selectLabel(label),
+                )),
+              ]),
+
+              const SizedBox(height: 80), // 底部留空給按鈕
+            ]),
+          ),
         ),
       ]),
-      actions: [
-        TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消')),
-        ElevatedButton(
-          style: ElevatedButton.styleFrom(
-              backgroundColor: _isIncome ? Colors.green : Colors.red,
-              foregroundColor: Colors.white),
-          onPressed: _submit,
-          child: const Text('確定新增'),
+
+      // ── 確定按鈕（固定在底部）──────────────────────────────
+      bottomNavigationBar: Padding(
+        padding: EdgeInsets.only(
+          left: 16, right: 16, bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+          top: 8,
         ),
-      ],
+        child: SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: canSubmit
+                  ? (_isIncome ? Colors.green : Colors.red)
+                  : Colors.grey[300],
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+            ),
+            onPressed: canSubmit ? _submit : null,
+            child: Text(
+              canSubmit ? '確定新增' : '請填寫名稱和金額',
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── 標籤小按鈕 ──────────────────────────────────────────────────
+
+class _LabelChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _LabelChip({
+    required this.label,
+    required this.selected,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected ? color : color.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+              color: selected ? color : color.withValues(alpha: 0.3)),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? Colors.white : color,
+            fontSize: 13,
+            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+      ),
     );
   }
 }
