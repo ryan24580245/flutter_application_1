@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import 'models.dart';
 import 'settings.dart';
+import 'label_service.dart';
 import 'widgets/label_widgets.dart';
 
 const _kDefaultExpenseLabels = [
@@ -19,7 +20,7 @@ const _kDefaultExpenseLabels = [
 const _kDefaultIncomeLabels = [
   '薪資', '獎金', '加班費', '兼職',
   '投資', '股息', '利息',
-  '退款', '獎金', '紅包',
+  '退款', '年終獎金', '紅包',
   '租金收入', '其他收入',
 ];
 
@@ -65,12 +66,14 @@ class _AddTransactionDialogState extends State<AddTransactionDialog> {
     if (_customLabels.any((l) => l.trim() == trimmed)) return;
     final updated = [..._customLabels, trimmed];
     await Settings.setCustomLabels(updated);
+    LabelService.pushLabels(updated); // 已登入才會真正上傳，未登入自動略過
     if (mounted) setState(() => _customLabels = updated);
   }
 
   Future<void> _removeCustomLabel(String label) async {
     final updated = _customLabels.where((l) => l != label).toList();
     await Settings.setCustomLabels(updated);
+    LabelService.pushLabels(updated); // 已登入才會真正上傳，未登入自動略過
     if (mounted) setState(() => _customLabels = updated);
   }
 

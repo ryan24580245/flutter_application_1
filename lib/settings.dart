@@ -16,4 +16,12 @@ class Settings {
 
   static Future<void> setCustomLabels(List<String> labels) async =>
       (await _instance).setStringList(_customLabelsKey, labels);
+
+  // 清掉「固定預算」跟「自建標籤」這兩項本機設定
+  // 用在登出/切換帳號時，避免下一個登入的帳號看到上一個帳號留下的設定
+  static Future<void> clearAccountSpecificSettings() async {
+    final prefs = await _instance;
+    await prefs.remove(_fixedKey);
+    await prefs.remove(_customLabelsKey);
+  }
 }
