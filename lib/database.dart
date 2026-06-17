@@ -111,6 +111,16 @@ class AppDatabase {
     }
   }
 
+  // 清空本機所有記帳記錄（用在登出/切換帳號時，避免舊帳號的資料留在本機被下一個帳號看到）
+  Future<void> clearTransactions() async {
+    try {
+      await db.delete('transactions');
+    } catch (e) {
+      debugPrint('clearTransactions error: $e');
+      rethrow;
+    }
+  }
+
   Future<List<Transaction>> fetchMonth(int year, int month, {int limit = -1, int offset = 0}) async {
     final mm = month.toString().padLeft(2, '0');
     final nextMonth = DateTime(year, month + 1, 1);
