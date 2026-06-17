@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'models.dart';
-import 'database.dart';
 import 'home_view_model.dart';
 import 'widgets/home_widgets.dart';
 import 'add_transaction_page.dart';
@@ -27,7 +26,10 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _vm.dispose();
-    AppDatabase.instance.close();
+    // 注意：這裡故意不呼叫 AppDatabase.instance.close()
+    // 全域單例的資料庫連線，不應該因為某個頁面被關閉就跟著關掉，
+    // 否則之後如果加了登入頁/歡迎頁當作 App 起點，HomePage 被 pop 掉時
+    // 會把資料庫整個關閉，導致其他頁面再存取就直接崩潰。
     super.dispose();
   }
 

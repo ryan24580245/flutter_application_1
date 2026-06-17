@@ -75,6 +75,8 @@ class AppDatabase {
     await db.execute('CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date)');
   }
 
+  // 注意：這個方法故意不在 App 的任何頁面生命週期裡被呼叫
+  // 單例的資料庫連線應該活到整個 App 行程結束，不該跟著某個頁面被關閉
   Future<void> close() async => await _db?.close();
 
   Database get db {
@@ -98,6 +100,33 @@ class AppDatabase {
       );
     } catch (e) {
       debugPrint('insertTx error: $e');
+      rethrow;
+    }
+  }
+
+  // 批量寫入：把多筆記錄包在「同一個資料庫交易」裡，比逐筆 insertTx 快很多
+  // 同步下載雲端資料時用這個，而不是在迴圈裡一筆一筆呼叫 insertTx
+  Future<void> insertTxBatch(List<Transaction> txs) async {
+    if (txs.isEmpty) return;
+    try {
+      await db.transaction((txn) async {
+        for (final tx in txs) {
+          await txn.insert(
+            'transactions',
+            {
+              'id': tx.id,
+              'title': tx.title,
+              'amount': tx.amountCents,
+              'is_income': tx.isIncome ? 1 : 0,
+              'date': tx.localDateStr,
+              'time': tx.localTimeStr,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+      });
+    } catch (e) {
+      debugPrint('insertTxBatch error: $e');
       rethrow;
     }
   }
