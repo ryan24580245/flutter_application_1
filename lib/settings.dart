@@ -4,9 +4,11 @@ class Settings {
   static const _fixedKey = 'fixed_budget';
   static const _customLabelsKey = 'custom_labels';
 
-  static SharedPreferences? _prefs;
-  static Future<SharedPreferences> get _instance async =>
-      _prefs ??= await SharedPreferences.getInstance();
+  // 快取「拿取實例的 Future」本身，而不是快取已經算好的值
+  // 這樣即使同時有多處呼叫，也只會真正初始化一次，不會有競態條件
+  static Future<SharedPreferences>? _prefsFuture;
+  static Future<SharedPreferences> get _instance =>
+      _prefsFuture ??= SharedPreferences.getInstance();
 
   static Future<double> getFixed() async => (await _instance).getDouble(_fixedKey) ?? 0.0;
   static Future<void> setFixed(double v) async => (await _instance).setDouble(_fixedKey, v);
