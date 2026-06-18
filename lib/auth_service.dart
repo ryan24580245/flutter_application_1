@@ -3,13 +3,14 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:firebase_auth/firebase_auth.dart' as fb;
+import 'package:google_sign_in/google_sign_in.dart';
 import 'apiconfig.dart';
 
 class AuthService {
-  // token 是身分憑證，不放在一般的 SharedPreferences（明文存在沙盒檔案裡）
-  // 改用加密過的安全儲存區：iOS 用 Keychain、Android 用 Keystore
   static const _secureStorage = FlutterSecureStorage();
   static const _timeout = Duration(seconds: 10);
+  static final _googleSignIn = GoogleSignIn();
 
   // 註冊
   static Future<Map<String, dynamic>> signup(
@@ -50,11 +51,8 @@ class AuthService {
           .timeout(_timeout);
       final result = jsonDecode(response.body);
 
-      // 登入成功，把 token 存起來
       if (result['success'] == true) {
-        await _secureStorage.write(key: 'token', value: result['data']['token']);
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('name', result['data']['name']);
+        await _saveSession(result['data']['token'], result['data']['name']);
       }
 
       return result;
@@ -63,6 +61,50 @@ class AuthService {
     } catch (e) {
       return {'success': false, 'error': '連線失敗，請確認網路或伺服器是否啟動'};
     }
+  }
+
+  // 用 Google 帳號登入：跳出 Google 選擇帳號畫面，驗證成功後跟自己的後端換成自己系統的 token
+  static Future<Map<String, dynamic>> loginWithGoogle() async {
+    try {
+      final googleAccount = await _googleSignIn.signIn();
+      if (googleAccount == null) {
+        return {'success': false, 'error': '已取消登入'};
+      }
+
+      final googleAuth = await googleAccount.authentication;
+      final credential = fb.GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+
+      final userCredential = await fb.FirebaseAuth.instance.signInWithCredential(credential);
+      final idToken = await userCredential.user!.getIdToken();
+
+      final response = await http
+          .post(
+            Uri.parse('${ApiConfig.baseUrl}/auth/google'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'idToken': idToken}),
+          )
+          .timeout(_timeout);
+      final result = jsonDecode(response.body);
+
+      if (result['success'] == true) {
+        await _saveSession(result['data']['token'], result['data']['name']);
+      }
+
+      return result;
+    } on TimeoutException {
+      return {'success': false, 'error': '網路連線逾時，請重試'};
+    } catch (e) {
+      return {'success': false, 'error': 'Google 登入失敗：$e'};
+    }
+  }
+
+  static Future<void> _saveSession(String token, String name) async {
+    await _secureStorage.write(key: 'token', value: token);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('name', name);
   }
 
   // 取得已儲存的 token
@@ -84,6 +126,11 @@ class AuthService {
     await _secureStorage.delete(key: 'token');
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('name');
+    try {
+      await _googleSignIn.signOut();
+    } catch (e) {
+      // 不是用 Google 登入的話這裡本來就會沒事可做，忽略即可
+    }
   }
 
   // 檢查是否已登入

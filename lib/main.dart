@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'database.dart';
 import 'home_page.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(); // 讀取 android/app/google-services.json 裡的設定
   await AppDatabase.instance.init();
   runApp(const BudgetApp());
 }

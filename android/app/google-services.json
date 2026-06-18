@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "1078778635340",
+    "project_id": "accounting-online-2dfe3",
+    "storage_bucket": "accounting-online-2dfe3.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1078778635340:android:9cb7d50db4630263ff40e9",
+        "android_client_info": {
+          "package_name": "com.example.flutter_application_1"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1078778635340-irs8q437qbl5kjt58snosr3sng6uaq18.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.flutter_application_1",
+            "certificate_hash": "4202cdb21d20e595c87ec54736a240ea39b01ce9"
+          }
+        },
+        {
+          "client_id": "1078778635340-1ndc2bj445jvc9ck0n0oahf8crgmja3c.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA7-osgW_2X_mqgHlYQym5mLz0zWp7hm58"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1078778635340-1ndc2bj445jvc9ck0n0oahf8crgmja3c.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

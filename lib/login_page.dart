@@ -74,6 +74,28 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
+  Future<void> _submitGoogle() async {
+    setState(() {
+      _isLoading = true;
+      _errorMsg = null;
+    });
+
+    try {
+      final result = await AuthService.loginWithGoogle();
+      if (result['success'] == true) {
+        widget.onLoginSuccess();
+      } else {
+        setState(() {
+          _errorMsg = result['error'] ?? '發生錯誤';
+        });
+      }
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -158,6 +180,24 @@ class _LoginPageState extends State<LoginPage> {
                   });
                 },
                 child: Text(_isLogin ? '還沒有帳號？點此註冊' : '已經有帳號？點此登入'),
+              ),
+
+              const SizedBox(height: 8),
+              Row(children: [
+                const Expanded(child: Divider()),
+                Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: Text('或', style: TextStyle(color: Colors.grey[500]))),
+                const Expanded(child: Divider()),
+              ]),
+              const SizedBox(height: 16),
+
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.g_mobiledata, size: 28),
+                  label: const Text('使用 Google 登入'),
+                  style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
+                  onPressed: _isLoading ? null : _submitGoogle,
+                ),
               ),
             ],
           ),
