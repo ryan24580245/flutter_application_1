@@ -117,8 +117,9 @@ class _AddTransactionDialogState extends State<AddTransactionDialog> {
     if (title.isEmpty || amountYuan == null || amountYuan <= 0) return;
 
     final now = DateTime.now();
-    final isViewToday = widget.date.year == now.year && widget.date.month == now.month && widget.date.day == now.day;
-    final txDate = isViewToday ? now : DateTime(widget.date.year, widget.date.month, widget.date.day, 12, 0, 0);
+    // 用「現在實際填寫的時間」，套用在你正在瀏覽/選擇的那個日期上
+    // 這樣不管是幫今天記帳，還是補記過去的日期，同一天新增多筆時排序都會照實際輸入的先後順序排
+    final txDate = DateTime(widget.date.year, widget.date.month, widget.date.day, now.hour, now.minute, now.second);
 
     Navigator.pop(
       context,

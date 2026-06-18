@@ -8,40 +8,42 @@ import 'auth_service.dart';
 class ShareService {
   static const _timeout = Duration(seconds: 10);
 
-  // 取得目前「有效」的分享碼狀態。沒有或已過期，shareCode 會是 null
-  static Future<Map<String, dynamic>?> getMyShareStatus() async {
+  // 列出目前帳號所有「還有效」的分享碼
+  static Future<List<Map<String, dynamic>>?> listMyShares() async {
     final token = await AuthService.getToken();
     if (token == null) return null;
 
     try {
       final response = await http
-          .get(
-            Uri.parse('${ApiConfig.baseUrl}/share/code'),
-            headers: {'Authorization': 'Bearer $token'},
-          )
+          .get(Uri.parse('${ApiConfig.baseUrl}/share'), headers: {'Authorization': 'Bearer $token'})
           .timeout(_timeout);
       final result = jsonDecode(response.body);
       if (result['success'] == true) {
-        return result['data'] as Map<String, dynamic>;
+        return List<Map<String, dynamic>>.from(result['data']['shares'] ?? []);
       }
       return null;
     } catch (e) {
-      debugPrint('getMyShareStatus 失敗: $e');
+      debugPrint('listMyShares 失敗: $e');
       return null;
     }
   }
 
-  // 依指定期限產生新的分享碼：'hour' / 'day' / 'week' / 'permanent'
-  static Future<Map<String, dynamic>?> generateShareCode(String duration) async {
+  // 建立一組新的分享碼：指定要分享哪個月份、有效期限、是否一次性
+  static Future<Map<String, dynamic>?> createShare({
+    required int year,
+    required int month,
+    required String duration,
+    required bool oneTime,
+  }) async {
     final token = await AuthService.getToken();
     if (token == null) return null;
 
     try {
       final response = await http
           .post(
-            Uri.parse('${ApiConfig.baseUrl}/share/code'),
+            Uri.parse('${ApiConfig.baseUrl}/share'),
             headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'},
-            body: jsonEncode({'duration': duration}),
+            body: jsonEncode({'year': year, 'month': month, 'duration': duration, 'oneTime': oneTime}),
           )
           .timeout(_timeout);
       final result = jsonDecode(response.body);
@@ -50,23 +52,33 @@ class ShareService {
       }
       return null;
     } catch (e) {
-      debugPrint('generateShareCode 失敗: $e');
+      debugPrint('createShare 失敗: $e');
       return null;
     }
   }
 
-  // 用掃到的分享碼，查看別人的記帳記錄（唯讀，不需要登入）
-  // 可以指定 year / month 只查某個月份，不傳的話伺服器會預設用現在這個月
-  static Future<Map<String, dynamic>> getSharedRecords(String code, {int? year, int? month}) async {
+  // 提早撤銷一組分享碼
+  static Future<bool> revokeShare(String code) async {
+    final token = await AuthService.getToken();
+    if (token == null) return false;
+
     try {
-      final query = <String, String>{};
-      if (year != null) query['year'] = year.toString();
-      if (month != null) query['month'] = month.toString();
+      final response = await http
+          .delete(Uri.parse('${ApiConfig.baseUrl}/share/$code'), headers: {'Authorization': 'Bearer $token'})
+          .timeout(_timeout);
+      final result = jsonDecode(response.body);
+      return result['success'] == true;
+    } catch (e) {
+      debugPrint('revokeShare 失敗: $e');
+      return false;
+    }
+  }
 
-      final uri = Uri.parse('${ApiConfig.baseUrl}/share/$code')
-          .replace(queryParameters: query.isEmpty ? null : query);
-
-      final response = await http.get(uri).timeout(_timeout);
+  // 用掃到的分享碼，查看別人的記帳記錄（唯讀，不需要登入）
+  // 月份是建立這組碼的人決定的，這裡不用也不能指定 year/month
+  static Future<Map<String, dynamic>> getSharedRecords(String code) async {
+    try {
+      final response = await http.get(Uri.parse('${ApiConfig.baseUrl}/share/$code')).timeout(_timeout);
       return jsonDecode(response.body);
     } on TimeoutException {
       return {'success': false, 'error': '網路連線逾時，請重試'};

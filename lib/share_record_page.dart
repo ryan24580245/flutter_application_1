@@ -3,7 +3,7 @@ import 'models.dart';
 import 'share_service.dart';
 
 // 這個頁面完全沒有新增/刪除/編輯的按鈕，純粹顯示，唯讀
-// 每次只抓「選定月份」的資料，不會一次把全部歷史記錄抓回來造成卡頓
+// 月份是發 QR Code 的人決定的，這裡沒有切換月份的功能
 class SharedRecordsPage extends StatefulWidget {
   final String code;
   const SharedRecordsPage({super.key, required this.code});
@@ -15,8 +15,9 @@ class _SharedRecordsPageState extends State<SharedRecordsPage> {
   bool _loading = true;
   String? _error;
   String _name = '';
+  int? _year;
+  int? _month;
   List<Transaction> _txs = [];
-  DateTime _viewMonth = DateTime(DateTime.now().year, DateTime.now().month);
 
   @override
   void initState() {
@@ -25,16 +26,7 @@ class _SharedRecordsPageState extends State<SharedRecordsPage> {
   }
 
   Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-
-    final result = await ShareService.getSharedRecords(
-      widget.code,
-      year: _viewMonth.year,
-      month: _viewMonth.month,
-    );
+    final result = await ShareService.getSharedRecords(widget.code);
     if (!mounted) return;
 
     if (result['success'] == true) {
@@ -51,6 +43,8 @@ class _SharedRecordsPageState extends State<SharedRecordsPage> {
       list.sort((a, b) => b.date.compareTo(a.date));
       setState(() {
         _name = data['name'] ?? '';
+        _year = data['year'];
+        _month = data['month'];
         _txs = list;
         _loading = false;
       });
@@ -60,24 +54,6 @@ class _SharedRecordsPageState extends State<SharedRecordsPage> {
         _loading = false;
       });
     }
-  }
-
-  void _changeMonth(int delta) {
-    setState(() => _viewMonth = DateTime(_viewMonth.year, _viewMonth.month + delta));
-    _load();
-  }
-
-  Future<void> _pickMonth() async {
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: _viewMonth,
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2030),
-      helpText: '選擇月份',
-    );
-    if (picked == null) return;
-    setState(() => _viewMonth = DateTime(picked.year, picked.month));
-    _load();
   }
 
   int get _incomeCents => _txs.where((t) => t.isIncome).fold(0, (s, t) => s + t.amountCents);
@@ -94,28 +70,15 @@ class _SharedRecordsPageState extends State<SharedRecordsPage> {
       ),
       body: Column(
         children: [
-          Container(
-            color: Colors.white,
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                IconButton(icon: const Icon(Icons.chevron_left), onPressed: () => _changeMonth(-1)),
-                GestureDetector(
-                  onTap: _pickMonth,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    child: Text(
-                      '${_viewMonth.year} 年 ${_viewMonth.month} 月',
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                ),
-                IconButton(icon: const Icon(Icons.chevron_right), onPressed: () => _changeMonth(1)),
-              ],
+          if (!_loading && _error == null && _year != null) ...[
+            Container(
+              width: double.infinity,
+              color: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Center(
+                child: Text('$_year 年 $_month 月', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
             ),
-          ),
-          if (!_loading && _error == null)
             Container(
               width: double.infinity,
               color: Colors.white,
@@ -130,7 +93,8 @@ class _SharedRecordsPageState extends State<SharedRecordsPage> {
                 ],
               ),
             ),
-          const Divider(height: 1),
+            const Divider(height: 1),
+          ],
           Expanded(
             child: _loading
                 ? const Center(child: CircularProgressIndicator())

@@ -64,21 +64,40 @@ class _AccountPageState extends State<AccountPage> {
 
   Future<void> _runSync() async {
     setState(() => _syncing = true);
-    await SyncService.syncAfterLogin();
+    final ok = await SyncService.syncAfterLogin();
     await _syncLabels();
     if (!mounted) return;
     setState(() => _syncing = false);
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('資料已同步完成')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(ok ? '資料已同步完成' : '同步未完全成功，請確認網路後再試一次'),
+        backgroundColor: ok ? const Color(0xFF2E7D9F) : Colors.orange,
+      ),
+    );
   }
 
   Future<void> _logout() async {
     setState(() => _loggingOut = true);
-    // 登出前先把這個帳號的本機異動同步上雲端，避免漏傳
-    await SyncService.syncAfterLogin();
+
+    // 登出前先把這個帳號的本機異動同步上雲端
+    final syncOk = await SyncService.syncAfterLogin();
+    if (!syncOk) {
+      // 同步沒有成功，代表本機可能還有沒上傳的記錄
+      // 這時候絕對不能清空本機資料，也不能真的登出，否則這些記錄會永久消失
+      if (!mounted) return;
+      setState(() => _loggingOut = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('同步失敗，為了避免資料遺失，已取消登出，請確認網路後再試一次'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     final labels = await Settings.getCustomLabels();
     await LabelService.pushLabels(labels);
     // 清空本機記帳資料、自建標籤、固定預算，避免下一個登入的帳號看到這個帳號留下的東西
-    // 自建標籤已經在上面同步到雲端了，下次登入這個帳號時會再抓回來，不會真的消失
     await AppDatabase.instance.clearTransactions();
     await Settings.clearAccountSpecificSettings();
     await AuthService.logout();
@@ -99,7 +118,6 @@ class _AccountPageState extends State<AccountPage> {
   Widget build(BuildContext context) {
     return PopScope(
       // 同步或登出進行中時，不能切走這個畫面
-      // 避免使用者跑去首頁新增/刪除帳目，跟同步動作同時改動本機資料造成衝突
       canPop: !_busy,
       child: Scaffold(
         backgroundColor: const Color(0xFFF0F4F8),

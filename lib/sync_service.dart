@@ -11,9 +11,11 @@ class SyncService {
   static const _timeout = Duration(seconds: 10);
 
   // 登入成功後呼叫：把本地和雲端資料合併
-  static Future<void> syncAfterLogin() async {
+  // 回傳值代表「這次同步是不是完全成功」，呼叫端可以依此判斷要不要繼續做後面的動作
+  // （例如：登出前的最後一次同步如果失敗，就不該清空本機資料，避免還沒上傳的東西被刪掉）
+  static Future<bool> syncAfterLogin() async {
     final token = await AuthService.getToken();
-    if (token == null) return;
+    if (token == null) return true; // 沒登入，沒有東西需要同步，視為成功
 
     try {
       // 1. 取得雲端所有記錄
@@ -26,7 +28,7 @@ class SyncService {
       final result = jsonDecode(response.body);
       if (result['success'] != true) {
         debugPrint('syncAfterLogin: 取得雲端資料失敗 - ${result['error']}');
-        return;
+        return false;
       }
 
       final cloudList = result['data'] as List;
@@ -36,13 +38,14 @@ class SyncService {
       final localTxs = await AppDatabase.instance.fetchAll();
       final localIds = localTxs.map((t) => t.id).toSet();
 
-      // 3. 本地有、雲端沒有 → 一次打包上傳（不要一筆一筆等，否則資料多時會很慢）
+      // 3. 本地有、雲端沒有 → 一次打包上傳
       final toUpload = localTxs.where((t) => !cloudIds.contains(t.id)).toList();
+      bool uploadOk = true;
       if (toUpload.isNotEmpty) {
-        await _uploadBatch(token, toUpload);
+        uploadOk = await _uploadBatch(token, toUpload);
       }
 
-      // 4. 雲端有、本地沒有 → 一次寫入本機（同一個資料庫交易，比逐筆寫入快很多）
+      // 4. 雲端有、本地沒有 → 一次寫入本機
       final toDownload = <Transaction>[];
       for (final item in cloudList) {
         final id = item['_id'] as String;
@@ -59,16 +62,20 @@ class SyncService {
       if (toDownload.isNotEmpty) {
         await AppDatabase.instance.insertTxBatch(toDownload);
       }
+
+      // 上傳沒成功才算「這次同步不完全成功」
+      // 下載沒做完，最多下次再補回來，不會真的丟資料；上傳沒做完才會真的遺失本機資料
+      return uploadOk;
     } catch (e) {
       debugPrint('syncAfterLogin error: $e');
-      // 同步失敗不影響本機正常使用
+      return false;
     }
   }
 
-  // 把一批本機獨有的記錄，一次送到後端的批量上傳 API
-  static Future<void> _uploadBatch(String token, List<Transaction> txs) async {
+  // 把一批本機獨有的記錄一次送到後端，回傳是否真的成功寫入
+  static Future<bool> _uploadBatch(String token, List<Transaction> txs) async {
     try {
-      await http
+      final response = await http
           .post(
             Uri.parse('${ApiConfig.baseUrl}/transaction/batch'),
             headers: {
@@ -89,15 +96,18 @@ class SyncService {
             }),
           )
           .timeout(_timeout);
+      final result = jsonDecode(response.body);
+      return result['success'] == true;
     } catch (e) {
-      debugPrint('批量上傳失敗（下次同步會再試一次）: $e');
+      debugPrint('批量上傳失敗: $e');
+      return false;
     }
   }
 
   // 新增單筆記帳到雲端（登入時才呼叫）
   static Future<void> uploadTransaction(Transaction tx) async {
     final token = await AuthService.getToken();
-    if (token == null) return; // 未登入不上傳
+    if (token == null) return;
 
     try {
       await http
