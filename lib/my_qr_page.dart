@@ -40,16 +40,20 @@ class _MyQrPageState extends State<MyQrPage> {
   }
 
   void _showQr(Map<String, dynamic> share) {
+    final code = share['code']?.toString() ?? '';
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            QrImageView(data: share['code'], size: 200),
-            const SizedBox(height: 12),
-            Text('查看碼：${share['code']}', style: const TextStyle(fontWeight: FontWeight.bold)),
-          ],
+        content: SizedBox(
+          width: 240,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(width: 200, height: 200, child: QrImageView(data: code, size: 200)),
+              const SizedBox(height: 12),
+              Text('查看碼：$code', style: const TextStyle(fontWeight: FontWeight.bold)),
+            ],
+          ),
         ),
         actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('關閉'))],
       ),

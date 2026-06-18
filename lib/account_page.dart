@@ -7,6 +7,7 @@ import 'label_service.dart';
 import 'login_page.dart';
 import 'my_qr_page.dart';
 import 'scan_qr_page.dart';
+import 'share_record_page.dart';
 
 class AccountPage extends StatefulWidget {
   const AccountPage({super.key});
@@ -114,6 +115,38 @@ class _AccountPageState extends State<AccountPage> {
     Navigator.push(context, MaterialPageRoute(builder: (_) => const ScanQrPage()));
   }
 
+  Future<void> _enterCode() async {
+    final ctrl = TextEditingController();
+    final code = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('輸入查看碼'),
+        content: SingleChildScrollView(
+          child: TextField(
+            controller: ctrl,
+            autofocus: true,
+            textCapitalization: TextCapitalization.characters,
+            decoration: const InputDecoration(hintText: '例如：K7P2QX9A1B', border: OutlineInputBorder()),
+            onSubmitted: (v) => Navigator.pop(context, v),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2E7D9F), foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(context, ctrl.text),
+            child: const Text('查看'),
+          ),
+        ],
+      ),
+    );
+    if (code == null) return;
+    final trimmed = code.trim().toUpperCase();
+    if (trimmed.isEmpty) return;
+    if (!mounted) return;
+    Navigator.push(context, MaterialPageRoute(builder: (_) => SharedRecordsPage(code: trimmed)));
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -124,7 +157,7 @@ class _AccountPageState extends State<AccountPage> {
         appBar: AppBar(title: const Text('帳號'), backgroundColor: const Color(0xFF2E7D9F), foregroundColor: Colors.white),
         body: _loading
             ? const Center(child: CircularProgressIndicator())
-            : Padding(
+            : SingleChildScrollView(
                 padding: const EdgeInsets.all(24),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -212,6 +245,15 @@ class _AccountPageState extends State<AccountPage> {
                         icon: const Icon(Icons.qr_code_scanner),
                         label: const Text('掃描查看他人記錄'),
                         onPressed: _busy ? null : _goScan,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.keyboard),
+                        label: const Text('輸入查看碼'),
+                        onPressed: _busy ? null : _enterCode,
                       ),
                     ),
                     if (_busy) ...[
