@@ -131,6 +131,19 @@ class HomeViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> updateTransaction(Transaction tx) async {
+    // 1. 更新手機本機：insertTx 用的是「同 id 就覆蓋」，所以這裡等於把舊的換成新的
+    await AppDatabase.instance.insertTx(tx);
+    // 2. 更新雲端（已登入才會真正送出，未登入自動略過）
+    SyncService.updateTransaction(tx);
+    // 3. 重新讀取當月資料
+    //    編輯可能改了金額、收支類型、甚至把日期換到別天，
+    //    與其一格一格手動修畫面（容易出錯），不如直接從資料庫重讀一次，
+    //    保證畫面跟資料庫完全一致，最單純也最不會錯。
+    await _loadAll(viewDate.year, viewDate.month, viewDate.day);
+    notifyListeners();
+  }
+
   Future<void> deleteTransaction(String id) async {
     await AppDatabase.instance.deleteTx(id);
     SyncService.deleteTransaction(id); // 已登入才會真正刪除雲端，未登入自動略過

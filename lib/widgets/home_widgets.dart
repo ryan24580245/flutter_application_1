@@ -95,7 +95,8 @@ class _DistributeButtonWidgetState extends State<DistributeButtonWidget> {
 
 class TransactionListWidget extends StatefulWidget {
   final HomeViewModel vm;
-  const TransactionListWidget({super.key, required this.vm});
+  final void Function(Transaction) onEdit;
+  const TransactionListWidget({super.key, required this.vm, required this.onEdit});
   @override
   State<TransactionListWidget> createState() => _TransactionListWidgetState();
 }
@@ -110,6 +111,7 @@ class _TransactionListWidgetState extends State<TransactionListWidget> {
   Widget build(BuildContext context) => _TransactionList(
         transactions: widget.vm.dayTransactions,
         onDelete: widget.vm.deleteTransaction,
+        onEdit: widget.onEdit,
       );
 }
 
@@ -184,7 +186,8 @@ class _BudgetCard extends StatelessWidget {
 class _TransactionList extends StatefulWidget {
   final List<Transaction> transactions;
   final Future<void> Function(String) onDelete;
-  const _TransactionList({required this.transactions, required this.onDelete});
+  final void Function(Transaction) onEdit;
+  const _TransactionList({required this.transactions, required this.onDelete, required this.onEdit});
   @override
   State<_TransactionList> createState() => _TransactionListState();
 }
@@ -252,13 +255,33 @@ class _TransactionListState extends State<_TransactionList> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       child: ListTile(
                         dense: true,
+                        onTap: () => widget.onEdit(tx),
                         leading: CircleAvatar(
                           backgroundColor: tx.isIncome ? Colors.green[50] : Colors.red[50],
                           child: Icon(tx.isIncome ? Icons.arrow_downward : Icons.arrow_upward,
                               color: tx.isIncome ? Colors.green : Colors.red, size: 18),
                         ),
                         title: Text(tx.title, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-                        subtitle: Text(DateFormat('HH:mm').format(tx.date), style: TextStyle(color: Colors.grey[500], fontSize: 11)),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(DateFormat('HH:mm').format(tx.date), style: TextStyle(color: Colors.grey[500], fontSize: 11)),
+                            // 有標記位置才顯示這一行
+                            if (tx.hasLocation)
+                              Row(children: [
+                                Icon(Icons.place, size: 11, color: Colors.grey[500]),
+                                const SizedBox(width: 2),
+                                Expanded(
+                                  child: Text(
+                                    tx.address ?? '已標記位置',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(color: Colors.grey[500], fontSize: 11),
+                                  ),
+                                ),
+                              ]),
+                          ],
+                        ),
                         trailing: Text(
                           '${tx.isIncome ? '+' : '-'}\$${_kNf.format(tx.amount)}',
                           style: TextStyle(color: tx.isIncome ? Colors.green : Colors.red, fontWeight: FontWeight.bold, fontSize: 15),

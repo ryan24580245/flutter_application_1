@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'models.dart';
+import 'location_picker.dart';
 import 'settings.dart';
 import 'label_service.dart';
 import 'widgets/label_widgets.dart';
@@ -26,7 +28,9 @@ const _kDefaultIncomeLabels = [
 
 class AddTransactionDialog extends StatefulWidget {
   final DateTime date;
-  const AddTransactionDialog({super.key, required this.date});
+  // 要編輯的記錄。沒給（null）= 新增；有給 = 編輯這一筆
+  final Transaction? existing;
+  const AddTransactionDialog({super.key, required this.date, this.existing});
   @override
   State<AddTransactionDialog> createState() => _AddTransactionDialogState();
 }
@@ -39,9 +43,28 @@ class _AddTransactionDialogState extends State<AddTransactionDialog> {
   final _uuid = const Uuid();
   List<String> _customLabels = [];
 
+  // 目前這筆要存的位置（沒選就維持 null）
+  double? _latitude;
+  double? _longitude;
+  String? _address;
+
+  // 方便判斷現在是不是「編輯模式」
+  bool get _isEditing => widget.existing != null;
+
   @override
   void initState() {
     super.initState();
+    // 編輯模式：把這筆記錄的現有內容先填進畫面，使用者再改
+    final ex = widget.existing;
+    if (ex != null) {
+      _isIncome = ex.isIncome;
+      _titleCtrl.text = ex.title;
+      _latitude = ex.latitude;
+      _longitude = ex.longitude;
+      _address = ex.address;
+      final a = ex.amount;
+      _amountCtrl.text = a == a.roundToDouble() ? a.toStringAsFixed(0) : a.toString();
+    }
     _loadCustomLabels();
     _amountCtrl.addListener(() => setState(() {}));
     _titleCtrl.addListener(() => setState(() {}));
@@ -111,19 +134,121 @@ class _AddTransactionDialogState extends State<AddTransactionDialog> {
     );
   }
 
+  // 打開地圖選位置頁，回來後把選到的位置存起來
+  Future<void> _pickLocation() async {
+    final result = await Navigator.push<Map<String, dynamic>>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => LocationPickerPage(initialLat: _latitude, initialLng: _longitude),
+      ),
+    );
+    if (result == null) return;
+    setState(() {
+      _latitude = result['latitude'] as double?;
+      _longitude = result['longitude'] as double?;
+      _address = result['address'] as String?;
+    });
+  }
+
+  // 用外部 Google 地圖打開這個位置
+  Future<void> _openInMaps() async {
+    if (_latitude == null || _longitude == null) return;
+    final uri = Uri.parse('https://www.google.com/maps/search/?api=1&query=$_latitude,$_longitude');
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('無法開啟地圖')));
+    }
+  }
+
+  // 位置區塊的畫面
+  Widget _buildLocationCard() {
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Text('位置（可選）', style: TextStyle(color: Colors.grey[600], fontSize: 13, fontWeight: FontWeight.w500)),
+            const Spacer(),
+            if (_latitude != null)
+              TextButton.icon(
+                icon: const Icon(Icons.close, size: 16),
+                label: const Text('移除'),
+                style: TextButton.styleFrom(foregroundColor: Colors.red),
+                onPressed: () => setState(() {
+                  _latitude = null;
+                  _longitude = null;
+                  _address = null;
+                }),
+              ),
+          ]),
+          const SizedBox(height: 8),
+          if (_latitude == null)
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.add_location_alt),
+                label: const Text('在地圖上選擇位置'),
+                onPressed: _pickLocation,
+              ),
+            )
+          else ...[
+            Row(children: [
+              const Icon(Icons.place, color: Color(0xFF2E7D9F)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(_address ?? '${_latitude!.toStringAsFixed(5)}, ${_longitude!.toStringAsFixed(5)}'),
+              ),
+            ]),
+            const SizedBox(height: 8),
+            Row(children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.edit_location_alt),
+                  label: const Text('重新選擇'),
+                  onPressed: _pickLocation,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.map),
+                  label: const Text('開啟地圖'),
+                  onPressed: _openInMaps,
+                ),
+              ),
+            ]),
+          ],
+        ]),
+      ),
+    );
+  }
+
   void _submit() {
     final title = _titleCtrl.text.trim();
     final amountYuan = double.tryParse(_amountCtrl.text.trim());
     if (title.isEmpty || amountYuan == null || amountYuan <= 0) return;
 
     final now = DateTime.now();
-    // 用「現在實際填寫的時間」，套用在你正在瀏覽/選擇的那個日期上
-    // 這樣不管是幫今天記帳，還是補記過去的日期，同一天新增多筆時排序都會照實際輸入的先後順序排
-    final txDate = DateTime(widget.date.year, widget.date.month, widget.date.day, now.hour, now.minute, now.second);
+    // 編輯時：沿用原本的 id（才能覆蓋同一筆）和原本的日期時間（位置不亂跳）
+    // 新增時：產生一個全新的 id，並用「現在實際填寫的時間」套在所選日期上
+    final ex = widget.existing;
+    final id = ex?.id ?? _uuid.v4();
+    final txDate = ex?.date ??
+        DateTime(widget.date.year, widget.date.month, widget.date.day, now.hour, now.minute, now.second);
 
     Navigator.pop(
       context,
-      Transaction(id: _uuid.v4(), title: title, amountCents: Transaction.toCents(amountYuan), isIncome: _isIncome, date: txDate),
+      Transaction(
+        id: id,
+        title: title,
+        amountCents: Transaction.toCents(amountYuan),
+        isIncome: _isIncome,
+        date: txDate,
+        latitude: _latitude,
+        longitude: _longitude,
+        address: _address,
+      ),
     );
   }
 
@@ -137,7 +262,7 @@ class _AddTransactionDialogState extends State<AddTransactionDialog> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF2E7D9F),
         foregroundColor: Colors.white,
-        title: const Text('新增收支'),
+        title: Text(_isEditing ? '編輯收支' : '新增收支'),
         leading: IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
       ),
       body: Column(children: [
@@ -199,6 +324,8 @@ class _AddTransactionDialogState extends State<AddTransactionDialog> {
                   ]),
                 ),
               ),
+              const SizedBox(height: 16),
+              _buildLocationCard(),
               const SizedBox(height: 16),
               if (_customLabels.isNotEmpty) ...[
                 Row(children: [
@@ -277,7 +404,7 @@ class _AddTransactionDialogState extends State<AddTransactionDialog> {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
             onPressed: canSubmit ? _submit : null,
-            child: Text(canSubmit ? '確定新增' : '請填寫名稱和金額', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            child: Text(canSubmit ? (_isEditing ? '儲存修改' : '確定新增') : '請填寫名稱和金額', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           ),
         ),
       ),

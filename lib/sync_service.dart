@@ -56,6 +56,9 @@ class SyncService {
             amountCents: item['amount'],
             isIncome: item['isIncome'],
             date: DateTime.parse('${item['date']}T${item['time']}'),
+            latitude: (item['latitude'] as num?)?.toDouble(),
+            longitude: (item['longitude'] as num?)?.toDouble(),
+            address: item['address'] as String?,
           ));
         }
       }
@@ -91,6 +94,9 @@ class SyncService {
                         'isIncome': tx.isIncome,
                         'date': tx.localDateStr,
                         'time': tx.localTimeStr,
+                        'latitude': tx.latitude,
+                        'longitude': tx.longitude,
+                        'address': tx.address,
                       })
                   .toList(),
             }),
@@ -124,11 +130,44 @@ class SyncService {
               'isIncome': tx.isIncome,
               'date': tx.localDateStr,
               'time': tx.localTimeStr,
+              'latitude': tx.latitude,
+              'longitude': tx.longitude,
+              'address': tx.address,
             }),
           )
           .timeout(_timeout);
     } catch (e) {
       debugPrint('uploadTransaction 失敗（下次同步會再補）: $e');
+    }
+  }
+
+  // 修改雲端的記帳（登入時才呼叫）：用 PUT 把同一個 id 的內容換成新的
+  static Future<void> updateTransaction(Transaction tx) async {
+    final token = await AuthService.getToken();
+    if (token == null) return;
+
+    try {
+      await http
+          .put(
+            Uri.parse('${ApiConfig.baseUrl}/transaction/${tx.id}'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode({
+              'title': tx.title,
+              'amount': tx.amountCents,
+              'isIncome': tx.isIncome,
+              'date': tx.localDateStr,
+              'time': tx.localTimeStr,
+              'latitude': tx.latitude,
+              'longitude': tx.longitude,
+              'address': tx.address,
+            }),
+          )
+          .timeout(_timeout);
+    } catch (e) {
+      debugPrint('updateTransaction 失敗: $e');
     }
   }
 

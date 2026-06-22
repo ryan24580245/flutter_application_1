@@ -6,6 +6,10 @@ class Transaction {
   final int amountCents;
   final bool isIncome;
   final DateTime date;
+  // 位置（可選）：沒有就是 null，代表這筆沒有標記位置
+  final double? latitude;
+  final double? longitude;
+  final String? address;
 
   const Transaction({
     required this.id,
@@ -13,7 +17,13 @@ class Transaction {
     required this.amountCents,
     required this.isIncome,
     required this.date,
+    this.latitude,
+    this.longitude,
+    this.address,
   });
+
+  // 方便判斷這筆有沒有位置
+  bool get hasLocation => latitude != null && longitude != null;
 
   double get amount => amountCents / 100;
   static int toCents(double yuan) => (yuan * 100).round();
@@ -38,6 +48,9 @@ class Transaction {
       amountCents: m['amount'] as int,
       isIncome: (m['is_income'] as int) == 1,
       date: parsedDate,
+      latitude: (m['latitude'] as num?)?.toDouble(),
+      longitude: (m['longitude'] as num?)?.toDouble(),
+      address: m['address'] as String?,
     );
   }
 }

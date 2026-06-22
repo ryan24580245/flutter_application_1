@@ -65,10 +65,16 @@ class _AccountPageState extends State<AccountPage> {
 
   Future<void> _runSync() async {
     setState(() => _syncing = true);
-    final ok = await SyncService.syncAfterLogin();
-    await _syncLabels();
+    bool ok = false;
+    try {
+      ok = await SyncService.syncAfterLogin();
+      await _syncLabels();
+    } catch (e) {
+      ok = false;
+    } finally {
+      if (mounted) setState(() => _syncing = false);
+    }
     if (!mounted) return;
-    setState(() => _syncing = false);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(ok ? '資料已同步完成' : '同步未完全成功，請確認網路後再試一次'),
@@ -79,32 +85,38 @@ class _AccountPageState extends State<AccountPage> {
 
   Future<void> _logout() async {
     setState(() => _loggingOut = true);
+    try {
+      // 登出前先把這個帳號的本機異動同步上雲端
+      final syncOk = await SyncService.syncAfterLogin();
+      if (!syncOk) {
+        // 同步沒有成功，代表本機可能還有沒上傳的記錄
+        // 這時候絕對不能清空本機資料，也不能真的登出，否則這些記錄會永久消失
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('同步失敗，為了避免資料遺失，已取消登出，請確認網路後再試一次'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
 
-    // 登出前先把這個帳號的本機異動同步上雲端
-    final syncOk = await SyncService.syncAfterLogin();
-    if (!syncOk) {
-      // 同步沒有成功，代表本機可能還有沒上傳的記錄
-      // 這時候絕對不能清空本機資料，也不能真的登出，否則這些記錄會永久消失
+      final labels = await Settings.getCustomLabels();
+      await LabelService.pushLabels(labels);
+      // 清空本機記帳資料、自建標籤、固定預算，避免下一個登入的帳號看到這個帳號留下的東西
+      await AppDatabase.instance.clearTransactions();
+      await Settings.clearAccountSpecificSettings();
+      await AuthService.logout();
       if (!mounted) return;
-      setState(() => _loggingOut = false);
+      await _loadStatus();
+    } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('同步失敗，為了避免資料遺失，已取消登出，請確認網路後再試一次'),
-          backgroundColor: Colors.red,
-        ),
+        const SnackBar(content: Text('登出時發生錯誤，請重新嘗試'), backgroundColor: Colors.red),
       );
-      return;
+    } finally {
+      if (mounted) setState(() => _loggingOut = false);
     }
-
-    final labels = await Settings.getCustomLabels();
-    await LabelService.pushLabels(labels);
-    // 清空本機記帳資料、自建標籤、固定預算，避免下一個登入的帳號看到這個帳號留下的東西
-    await AppDatabase.instance.clearTransactions();
-    await Settings.clearAccountSpecificSettings();
-    await AuthService.logout();
-    if (!mounted) return;
-    setState(() => _loggingOut = false);
-    await _loadStatus();
   }
 
   void _goMyQr() {

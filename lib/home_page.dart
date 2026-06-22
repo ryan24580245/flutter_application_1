@@ -54,6 +54,24 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  // 點一筆記錄 -> 打開同一個頁面（帶入這筆資料）-> 改完存回去
+  Future<void> _editTransaction(Transaction tx) async {
+    final result = await Navigator.push<Transaction>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AddTransactionDialog(date: _vm.viewDate, existing: tx),
+        fullscreenDialog: true,
+      ),
+    );
+    if (result == null) return;
+    try {
+      await _vm.updateTransaction(result);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('修改失敗，請稍後再試'), backgroundColor: Colors.red));
+    }
+  }
+
   Future<void> _distribute() async {
     try {
       final msg = await _vm.distributeEvenly();
@@ -101,7 +119,7 @@ class _HomePageState extends State<HomePage> {
         BudgetCardsWidget(vm: _vm, onMonthTap: _goMonthBudget, onDayTap: _goDayBudget),
         DistributeButtonWidget(vm: _vm, onTap: _distribute),
         const SizedBox(height: 8),
-        Expanded(child: TransactionListWidget(vm: _vm)),
+        Expanded(child: TransactionListWidget(vm: _vm, onEdit: _editTransaction)),
       ]),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _addTransaction,

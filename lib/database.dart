@@ -7,7 +7,7 @@ class AppDatabase {
   AppDatabase._();
   static final AppDatabase instance = AppDatabase._();
   Database? _db;
-  static const _kVersion = 2;
+  static const _kVersion = 3;
 
   Future<void> init() async {
     final dbPath = await getDatabasesPath();
@@ -36,6 +36,8 @@ class AppDatabase {
     switch (version) {
       case 2:
         await _migrateV1toV2(db);
+      case 3:
+        await _migrateV2toV3(db);
     }
   }
 
@@ -75,6 +77,13 @@ class AppDatabase {
     await db.execute('CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date)');
   }
 
+  // v3：每筆記帳多三個欄位來存位置（舊資料這三欄會是空值，不受影響）
+  Future<void> _migrateV2toV3(Database db) async {
+    await db.execute('ALTER TABLE transactions ADD COLUMN latitude REAL');
+    await db.execute('ALTER TABLE transactions ADD COLUMN longitude REAL');
+    await db.execute('ALTER TABLE transactions ADD COLUMN address TEXT');
+  }
+
   // 注意：這個方法故意不在 App 的任何頁面生命週期裡被呼叫
   // 單例的資料庫連線應該活到整個 App 行程結束，不該跟著某個頁面被關閉
   Future<void> close() async => await _db?.close();
@@ -95,6 +104,9 @@ class AppDatabase {
           'is_income': tx.isIncome ? 1 : 0,
           'date': tx.localDateStr,
           'time': tx.localTimeStr,
+          'latitude': tx.latitude,
+          'longitude': tx.longitude,
+          'address': tx.address,
         },
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
@@ -120,6 +132,9 @@ class AppDatabase {
               'is_income': tx.isIncome ? 1 : 0,
               'date': tx.localDateStr,
               'time': tx.localTimeStr,
+              'latitude': tx.latitude,
+              'longitude': tx.longitude,
+              'address': tx.address,
             },
             conflictAlgorithm: ConflictAlgorithm.replace,
           );
